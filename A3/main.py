@@ -60,15 +60,12 @@ random_subset = random.sample(words, number_of_random_words)
 vocab = build_vocab(random_subset)
 training_data = generate_training_data(random_subset, vocab)
 
-print("Vocabulary size:", len(vocab))
-print("Sample Training Data:", training_data[:10])
-
 # Word2Vec
 vocab_size = len(vocab)
 embed_size = 10  # Typically larger for real datasets
 word2vec = Word2Vec(vocab_size, embed_size)
 
-word2vec.train(training_data, epochs=word2vec_epoch, learning_rate=0.01)  # Adjust epochs and learning rate as needed
+word2vec.train(training_data, epochs=word2vec_epoch, learning_rate=0.10)  # Adjust epochs and learning rate as needed
 
 # Getting word embeddings
 word_embeddings_w2v = word2vec.W1
@@ -76,7 +73,7 @@ print("Word2Vec Embeddings shape:", word_embeddings_w2v.shape)
 
 # GloVe
 glove = GloVe(vocab_size, embed_size)
-glove.train(random_subset, vocab, epochs=glove_epoch, learning_rate=0.01)  # Adjust epochs and learning rate as needed
+glove.train(random_subset, vocab, epochs=glove_epoch, learning_rate=0.10)  # Adjust epochs and learning rate as needed
 
 # Getting word embeddings
 word_embeddings_glove = glove.W
