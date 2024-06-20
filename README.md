@@ -1,1 +1,0 @@
-# IA Exercice A3
