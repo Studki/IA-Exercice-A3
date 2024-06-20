@@ -1,51 +1,45 @@
 from datetime import datetime
-import numpy as np
 import sys
 from layer import RNNLayer
 from output import Softmax
-
+from LSTM import LSTMCell
+from datetime import datetime
+import numpy as np
+import sys
+from output import Softmax
 
 class Model:
     def __init__(self, word_dim, hidden_dim=100, bptt_truncate=4):
         self.word_dim = word_dim
         self.hidden_dim = hidden_dim
         self.bptt_truncate = bptt_truncate
-        self.U = np.random.uniform(-np.sqrt(1. / word_dim), np.sqrt(1. / word_dim), (hidden_dim, word_dim))
-        self.W = np.random.uniform(-np.sqrt(1. / hidden_dim), np.sqrt(1. / hidden_dim), (hidden_dim, hidden_dim))
+        self.lstm = LSTMCell(word_dim, hidden_dim)
         self.V = np.random.uniform(-np.sqrt(1. / hidden_dim), np.sqrt(1. / hidden_dim), (word_dim, hidden_dim))
 
-    '''
-        forward propagation (predicting word probabilities)
-        x is one single data, and a batch of data
-        for example x = [0, 179, 341, 416], then its y = [179, 341, 416, 1]
-    '''
     def forward_propagation(self, x):
-        # The total number of time steps
         T = len(x)
-        layers = []
-        prev_s = np.zeros(self.hidden_dim)
-        # For each time step...
+        h = np.zeros((T + 1, self.hidden_dim))
+        C = np.zeros((T + 1, self.hidden_dim))
+        o = np.zeros((T, self.word_dim))
+
         for t in range(T):
-            layer = RNNLayer()
-            input = np.zeros(self.word_dim)
-            input[x[t]] = 1
-            layer.forward(input, prev_s, self.U, self.W, self.V)
-            prev_s = layer.s
-            layers.append(layer)
-        return layers
+            x_onehot = np.zeros(self.word_dim)
+            x_onehot[x[t]] = 1
+            h[t + 1], C[t + 1] = self.lstm.forward(x_onehot, h[t], C[t])
+            o[t] = np.dot(self.V, h[t + 1])
+
+        return o, h, C
 
     def predict(self, x):
-        output = Softmax()
-        layers = self.forward_propagation(x)
-        return [np.argmax(output.predict(layer.mulv)) for layer in layers]
+        o, _, _ = self.forward_propagation(x)
+        return np.argmax(o, axis=1)
 
     def calculate_loss(self, x, y):
-        assert len(x) == len(y)
         output = Softmax()
-        layers = self.forward_propagation(x)
+        o, _, _ = self.forward_propagation(x)
         loss = 0.0
-        for i, layer in enumerate(layers):
-            loss += output.loss(layer.mulv, y[i])
+        for t in range(len(y)):
+            loss += output.loss(o[t], y[t])
         return loss / float(len(y))
 
     def calculate_total_loss(self, X, Y):
@@ -55,40 +49,32 @@ class Model:
         return loss / float(len(Y))
 
     def bptt(self, x, y):
-        assert len(x) == len(y)
-        output = Softmax()
-        layers = self.forward_propagation(x)
-        dU = np.zeros(self.U.shape)
-        dV = np.zeros(self.V.shape)
-        dW = np.zeros(self.W.shape)
+        T = len(y)
+        o, h, C = self.forward_propagation(x)
+        dU, dW, dV = np.zeros_like(self.lstm.U_i), np.zeros_like(self.lstm.W_i), np.zeros_like(self.V)
+        db = np.zeros(self.hidden_dim)
+        dh_next = np.zeros(self.hidden_dim)
+        dC_next = np.zeros(self.hidden_dim)
 
-        T = len(layers)
-        prev_s_t = np.zeros(self.hidden_dim)
-        diff_s = np.zeros(self.hidden_dim)
-        for t in range(0, T):
-            dmulv = output.diff(layers[t].mulv, y[t])
-            input = np.zeros(self.word_dim)
-            input[x[t]] = 1
-            dprev_s, dU_t, dW_t, dV_t = layers[t].backward(input, prev_s_t, self.U, self.W, self.V, diff_s, dmulv)
-            prev_s_t = layers[t].s
-            dmulv = np.zeros(self.word_dim)
-            for i in range(t-1, max(-1, t-self.bptt_truncate-1), -1):
-                input = np.zeros(self.word_dim)
-                input[x[i]] = 1
-                prev_s_i = np.zeros(self.hidden_dim) if i == 0 else layers[i-1].s
-                dprev_s, dU_i, dW_i, dV_i = layers[i].backward(input, prev_s_i, self.U, self.W, self.V, dprev_s, dmulv)
-                dU_t += dU_i
-                dW_t += dW_i
-            dV += dV_t
-            dU += dU_t
+        output = Softmax()
+        for t in reversed(range(T)):
+            dV += np.outer(output.diff(o[t], y[t]), h[t + 1])
+            dh = np.dot(self.V.T, output.diff(o[t], y[t])) + dh_next
+            dW_t, dU_t, db_t, dh_next, dC_next = self.lstm.backward(
+                np.eye(self.word_dim)[x[t]], h[t], C[t], dh, dC_next)
             dW += dW_t
-        return (dU, dW, dV)
+            dU += dU_t
+            db += db_t
+
+        return dU, dW, dV, db
 
     def sgd_step(self, x, y, learning_rate):
-        dU, dW, dV = self.bptt(x, y)
-        self.U -= learning_rate * dU
+        dU, dW, dV, db = self.bptt(x, y)
+        for attr in ['i', 'f', 'o', 'c']:
+            setattr(self.lstm, 'W_' + attr, getattr(self.lstm, 'W_' + attr) - learning_rate * dW)
+            setattr(self.lstm, 'U_' + attr, getattr(self.lstm, 'U_' + attr) - learning_rate * dU)
+            setattr(self.lstm, 'b_' + attr, getattr(self.lstm, 'b_' + attr) - learning_rate * db)
         self.V -= learning_rate * dV
-        self.W -= learning_rate * dW
 
     def train(self, X, Y, learning_rate=0.005, nepoch=100, evaluate_loss_after=5):
         num_examples_seen = 0
@@ -99,12 +85,10 @@ class Model:
                 losses.append((num_examples_seen, loss))
                 time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 print("%s: Loss after num_examples_seen=%d epoch=%d: %f" % (time, num_examples_seen, epoch, loss))
-                # Adjust the learning rate if loss increases
                 if len(losses) > 1 and losses[-1][1] > losses[-2][1]:
                     learning_rate = learning_rate * 0.5
                     print("Setting learning rate to %f" % learning_rate)
                 sys.stdout.flush()
-            # For each training example...
             for i in range(len(Y)):
                 self.sgd_step(X[i], Y[i], learning_rate)
                 num_examples_seen += 1
